@@ -1,0 +1,3 @@
+sympy @ git+https://github.com/InfinityMod/sympy.git#egg=sympy
+antlr4-python3-runtime==4.11
+bidict
