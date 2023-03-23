@@ -1,4 +1,5 @@
 from sympy import Eq
+from sympy.utilities.lambdify import lambdify
 from sympy.core.function import AppliedUndef
 
 
@@ -21,3 +22,9 @@ class CalcToolbox:
         if hasattr(eq0, "rhs"):
             _eq0 = Eq(eq0.lhs, _eq0)
         return _eq0
+        
+       
+    @classmethod
+    def lambidifyEq(cls, eq):
+        _args = eq.lhs.args
+        return _args, lambdify(_args, eq.rhs)

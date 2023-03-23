@@ -1,6 +1,6 @@
 import json
 from dotmap import DotMap
-from easycalc.jupyter.formulas import FormulaParser
+from easyMathSolver.jupyter.formulas import FormulaParser
 from sympy.parsing.latex._build_latex_antlr import build_parser
 
 build_parser()
@@ -22,16 +22,19 @@ class FormulaManager(DotMap):
 
     def remove(self, name):
         del self[name]
+        return self
 
     def load(self, path):
         with open(path, "r") as f:
             self.clear()
             for n, v in json.load(f).items():
                 self[n] = FormulaParser().load(v)
+        return self
 
     def save(self, path):
         with open(path, "w") as f:
             f.write(json.dumps({n: v.export() for n, v in self.items()}))
+        return self
 
     def cleanEmpty(self):
         for name, formula in list(self.items()):

@@ -73,6 +73,7 @@ class FormulaParser:
 
     def setExpr(self, expr):
         self.expr = expr
+        self._lt = self.toLatex()
         if self.mathfield_initialized:
             _html = "document.getElementById('formula_{0}')\
                         .setValue(ev.target.value,{{suppressChangeNotifications: true}});".format(self.mathfield_identifier)
@@ -143,6 +144,12 @@ class FormulaParser:
          </script>
         """.format(self.mathfield_identifier, self.toLatex())
         display(HTML(_html))
+
+    def subs(self, dct: dict):
+        for n, v in dct.items():
+            self.expr = self.expr.subs(n, v)
+        self.setExpr(self.expr)
+        return self
 
     def isEmpty(self):
         return self.expr == None
