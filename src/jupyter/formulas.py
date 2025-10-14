@@ -25,57 +25,173 @@ except ImportError:
         IPYWIDGETS_AVAILABLE = False
 
 
+# ============================================================================
+# SHARED CONFIGURATION FOR MATHLIVE EDITOR
+# ============================================================================
+
+# Shared CSS for both anywidget and HTML implementations
+MATHLIVE_CSS = """
+    .mathfield-container {
+        overflow: visible !important;
+        position: relative;
+        width: 100%;
+        margin-bottom: 1em;
+    }
+    .mathfield-container.keyboard-visible {
+        min-height: 400px;
+    }
+    math-field {
+        display: block;
+        padding: 0.5em;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 1.728em;
+        overflow: visible !important;
+        min-height: 2em;
+        width: 100%;
+    }
+    /* Position keyboard INSIDE container, not at page bottom */
+    .mathfield-container .ML__keyboard,
+    .mathfield-container math-virtual-keyboard {
+        position: absolute !important;
+        top: 100% !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: auto !important;
+        z-index: 1000 !important;
+        margin-top: 0.5em !important;
+    }
+    /* Force parent containers to expand and be visible */
+    .jp-OutputArea-output,
+    .jp-RenderedHTMLCommon,
+    .jp-OutputArea-child,
+    .output_subarea,
+    .widget-subarea {
+        overflow: visible !important;
+        min-height: inherit;
+    }
+    /* Ensure widget output area expands */
+    .jupyter-widgets-view {
+        overflow: visible !important;
+        min-height: inherit;
+    }
+"""
+
+# Shared JavaScript for keyboard management logic
+KEYBOARD_LOGIC_JS = """
+    // Track keyboard visibility and expand container
+    let keyboardVisible = false;
+
+    function showKeyboard() {
+        container.classList.add('keyboard-visible');
+        keyboardVisible = true;
+        keyboardBtn.textContent = '⌨️ Hide Keyboard';
+    }
+
+    function hideKeyboard() {
+        container.classList.remove('keyboard-visible');
+        keyboardVisible = false;
+        keyboardBtn.textContent = '⌨️ Keyboard';
+    }
+
+    // Button click to toggle keyboard by focusing/blurring
+    keyboardBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (keyboardVisible) {
+            mf.blur();
+            hideKeyboard();
+        } else {
+            mf.focus();
+            showKeyboard();
+        }
+    });
+
+    mf.addEventListener('focus', () => {
+        // Expand container when field gets focus (keyboard will appear with auto policy)
+        setTimeout(() => {
+            showKeyboard();
+            // Move keyboard into container if it exists
+            const kbd = document.querySelector('math-virtual-keyboard');
+            if (kbd && !container.contains(kbd)) {
+                container.appendChild(kbd);
+            }
+        }, 100);
+    });
+
+    mf.addEventListener('blur', () => {
+        // Collapse container when field loses focus
+        setTimeout(() => {
+            if (!mf.hasFocus()) {
+                hideKeyboard();
+            }
+        }, 200);
+    });
+"""
+
+# ============================================================================
+# ANYWIDGET IMPLEMENTATION
+# ============================================================================
+
 if ANYWIDGET_AVAILABLE:
     class MathFieldWidget(anywidget.AnyWidget):
         """MathLive formula editor widget (works in VS Code, JupyterLab, Classic Notebook)"""
         value = traitlets.Unicode('').tag(sync=True)
+        _esm = f"""
+        async function render({{ model, el }}) {{
+            // Load MathLive (latest version via official ESM CDN)
+            if (!window.MathfieldElement) {{
+                await import('https://esm.run/mathlive');
 
-        _esm = """
-        async function render({ model, el }) {
-            // Load MathLive (latest version)
-            if (!window.mathlive) {
-                const ml = await import('https://unpkg.com/mathlive/dist/mathlive.mjs');
-                ml.makeSharedVirtualKeyboard({ virtualKeyboardLayout: 'dvorak' });
-                window.mathlive = ml;
-
-                const link = document.createElement('link');
-                link.rel = 'stylesheet';
-                link.href = 'https://unpkg.com/mathlive/dist/mathlive-static.css';
-                document.head.appendChild(link);
-
+                // Add custom styles
                 const style = document.createElement('style');
-                style.innerHTML = '.formula { font-size: 1.728em; }';
+                style.innerHTML = `{MATHLIVE_CSS}`;
                 document.head.appendChild(style);
-            }
+            }}
+
+            // Create container with label and keyboard button
+            const container = document.createElement('div');
+            container.className = 'mathfield-container';
+
+            const labelContainer = document.createElement('div');
+            labelContainer.style.cssText = 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5em;';
 
             const label = document.createElement('label');
             label.textContent = 'Math-Editor';
-            el.appendChild(label);
+            labelContainer.appendChild(label);
+
+            const keyboardBtn = document.createElement('button');
+            keyboardBtn.textContent = '⌨️ Keyboard';
+            keyboardBtn.style.cssText = 'padding: 0.25em 0.5em; font-size: 0.9em; cursor: pointer;';
+            labelContainer.appendChild(keyboardBtn);
+
+            container.appendChild(labelContainer);
 
             const mf = document.createElement('math-field');
-            mf.setAttribute('use-shared-virtual-keyboard', '');
-            mf.setAttribute('class', 'formula');
             mf.value = model.get('value');
-            el.appendChild(mf);
+            container.appendChild(mf);
+
+            el.appendChild(container);
 
             await customElements.whenDefined('math-field');
 
-            // Set properties directly (modern MathLive API)
-            mf.virtualKeyboardMode = "manual";
-            mf.virtualKeyboards = "";
-            mf.smartFence = false;
+            // Set MathLive properties
+            mf.smartFence = true;
             mf.removeExtraneousParentheses = true;
+            mf.mathVirtualKeyboardPolicy = "auto";  // Auto-show keyboard on focus
 
-            mf.addEventListener('input', () => {
+            {KEYBOARD_LOGIC_JS}
+
+            mf.addEventListener('input', () => {{
                 model.set('value', mf.value);
                 model.save_changes();
-            });
+            }});
 
-            model.on('change:value', () => {
+            model.on('change:value', () => {{
                 if (mf.value !== model.get('value')) mf.value = model.get('value');
-            });
-        }
-        export default { render };
+            }});
+        }}
+        export default {{ render }};
         """
 
         def __init__(self, initial_latex='', **kwargs):
@@ -83,6 +199,10 @@ if ANYWIDGET_AVAILABLE:
             self.value = initial_latex
             display(initial_latex)
 
+
+# ============================================================================
+# FORMULA PARSER CLASS
+# ============================================================================
 
 class FormulaParser:
     symbol_names = {'rho': r'\rho'}
@@ -150,10 +270,6 @@ class FormulaParser:
         """
         import re
 
-        # Pattern to find subscripts/superscripts that aren't already properly braced
-        # Matches: _x or ^x where x is a single char not followed by {
-        # or _xyz or ^xyz where xyz is multiple chars not wrapped in {}
-
         def encapsulate_script(match):
             """Encapsulate the subscript or superscript"""
             operator = match.group(1)  # _ or ^
@@ -163,7 +279,6 @@ class FormulaParser:
             if content.startswith('{'):
                 return match.group(0)
 
-            # If it's a single character or digit, check if followed by another char
             # If single char/digit followed by space or operator, leave as-is
             if len(content) == 1:
                 return match.group(0)
@@ -171,18 +286,10 @@ class FormulaParser:
             # Multiple characters without braces - encapsulate
             return f"{operator}{{{content}}}"
 
-        # Pattern explanation:
-        # ([_^])           - Capture _ or ^
-        # (?!{)            - Not followed by {
-        # ([a-zA-Z0-9]+)   - Capture one or more alphanumeric chars
-        # (?![}])          - Not followed by }
+        # Pattern: ([_^])(?!\{)([a-zA-Z0-9]+)(?![}])
         latex = re.sub(r'([_^])(?!\{)([a-zA-Z0-9]+)(?![}])', encapsulate_script, latex)
 
-        # Also handle case where there's a single char followed by more content
-        # e.g., x_a_b should become x_{a}_{b}, but this is handled by above
-
         # Handle edge case: _{} or ^{} followed by non-braced content
-        # e.g., x_{n}m should be x_{nm}
         def merge_adjacent_scripts(match):
             """Merge adjacent subscripts or superscripts"""
             operator = match.group(1)
@@ -190,7 +297,6 @@ class FormulaParser:
             following = match.group(3)
             return f"{operator}{{{braced[1:-1]}{following}}}"
 
-        # Pattern: _{ content }following_chars
         latex = re.sub(r'([_^])(\{[^}]+\})([a-zA-Z0-9]+)', merge_adjacent_scripts, latex)
 
         return latex
@@ -228,6 +334,10 @@ class FormulaParser:
             return widget
 
         # Fallback to HTML with comm
+        return self._create_html_editor(initial_latex)
+
+    def _create_html_editor(self, initial_latex):
+        """Create HTML-based editor with MathLive for non-anywidget environments"""
         identifier = "cb_" + ''.join(random.sample(string.ascii_lowercase, 8))
         comm_target = f"mathfield_{identifier}"
 
@@ -245,27 +355,37 @@ class FormulaParser:
             except:
                 pass  # If all else fails, editor will be view-only
 
-        # Concise HTML with MathLive (latest version)
+        # Build HTML using shared CSS and JS
         html = f"""
-        <link rel="stylesheet" href="https://unpkg.com/mathlive/dist/mathlive-static.css">
-        <style>.formula {{ font-size: 1.728em; }}</style>
-        <label>Math-Editor</label>
-        <math-field id="mf_{identifier}" class="formula" use-shared-virtual-keyboard>{initial_latex}</math-field>
+        <style>{MATHLIVE_CSS}</style>
+        <div class="mathfield-container">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5em;">
+                <label>Math-Editor</label>
+                <button id="kb_{identifier}" style="padding: 0.25em 0.5em; font-size: 0.9em; cursor: pointer;">⌨️ Keyboard</button>
+            </div>
+            <math-field id="mf_{identifier}" style="display: block; padding: 0.5em; border: 1px solid #ccc; border-radius: 4px; font-size: 1.728em; overflow: visible; min-height: 2em; width: 100%;">{initial_latex}</math-field>
+        </div>
         <script type="module">
         (async () => {{
-            if (!window.mathlive) {{
-                const ml = await import('https://unpkg.com/mathlive/dist/mathlive.mjs');
-                ml.makeSharedVirtualKeyboard({{ virtualKeyboardLayout: 'dvorak' }});
-                window.mathlive = ml;
+            // Load MathLive
+            if (!window.MathfieldElement) {{
+                await import('https://esm.run/mathlive');
             }}
+
             const mf = document.getElementById('mf_{identifier}');
+            const container = mf.closest('.mathfield-container');
+            const keyboardBtn = document.getElementById('kb_{identifier}');
 
-            // Set properties directly (modern MathLive API)
-            mf.virtualKeyboardMode = "manual";
-            mf.virtualKeyboards = "";
-            mf.smartFence = false;
+            await customElements.whenDefined('math-field');
+
+            // Set MathLive properties
+            mf.smartFence = true;
             mf.removeExtraneousParentheses = true;
+            mf.mathVirtualKeyboardPolicy = "auto";
 
+            {KEYBOARD_LOGIC_JS}
+
+            // Setup comm or kernel communication
             const k = (typeof IPython !== 'undefined' && IPython?.notebook?.kernel) || (typeof Jupyter !== 'undefined' && Jupyter?.notebook?.kernel);
             if (k?.comm_manager) {{
                 const c = k.comm_manager.new_comm('{comm_target}');
