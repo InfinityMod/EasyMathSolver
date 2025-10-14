@@ -1,13 +1,87 @@
 import sympy
 import random
 import string
-import time
 from bidict import bidict
 from sympy import sympify, Symbol
-from sympy.parsing.latex import parse_latex
 from sympy.printing.latex import latex_escape
 from sympy.parsing.sympy_parser import parse_expr
-from IPython.display import HTML, Javascript, display
+from IPython.display import HTML, display
+
+# Ensure custom parser is loaded (imports package __init__ which triggers parser setup)
+from .. import __package_name__  # This triggers the custom parser setup via __init__.py
+from sympy.parsing.latex import parse_latex
+
+# Try anywidget first (best compatibility), then fallback to ipywidgets
+try:
+    import anywidget
+    import traitlets
+    ANYWIDGET_AVAILABLE = True
+except ImportError:
+    ANYWIDGET_AVAILABLE = False
+    try:
+        from ipywidgets import HTML as HTMLWidget
+        IPYWIDGETS_AVAILABLE = True
+    except ImportError:
+        IPYWIDGETS_AVAILABLE = False
+
+
+if ANYWIDGET_AVAILABLE:
+    class MathFieldWidget(anywidget.AnyWidget):
+        """MathLive formula editor widget (works in VS Code, JupyterLab, Classic Notebook)"""
+        value = traitlets.Unicode('').tag(sync=True)
+
+        _esm = """
+        async function render({ model, el }) {
+            // Load MathLive (latest version)
+            if (!window.mathlive) {
+                const ml = await import('https://unpkg.com/mathlive/dist/mathlive.mjs');
+                ml.makeSharedVirtualKeyboard({ virtualKeyboardLayout: 'dvorak' });
+                window.mathlive = ml;
+
+                const link = document.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = 'https://unpkg.com/mathlive/dist/mathlive-static.css';
+                document.head.appendChild(link);
+
+                const style = document.createElement('style');
+                style.innerHTML = '.formula { font-size: 1.728em; }';
+                document.head.appendChild(style);
+            }
+
+            const label = document.createElement('label');
+            label.textContent = 'Math-Editor';
+            el.appendChild(label);
+
+            const mf = document.createElement('math-field');
+            mf.setAttribute('use-shared-virtual-keyboard', '');
+            mf.setAttribute('class', 'formula');
+            mf.value = model.get('value');
+            el.appendChild(mf);
+
+            await customElements.whenDefined('math-field');
+
+            // Set properties directly (modern MathLive API)
+            mf.virtualKeyboardMode = "manual";
+            mf.virtualKeyboards = "";
+            mf.smartFence = false;
+            mf.removeExtraneousParentheses = true;
+
+            mf.addEventListener('input', () => {
+                model.set('value', mf.value);
+                model.save_changes();
+            });
+
+            model.on('change:value', () => {
+                if (mf.value !== model.get('value')) mf.value = model.get('value');
+            });
+        }
+        export default { render };
+        """
+
+        def __init__(self, initial_latex='', **kwargs):
+            super().__init__(**kwargs)
+            self.value = initial_latex
+            display(initial_latex)
 
 
 class FormulaParser:
@@ -18,44 +92,15 @@ class FormulaParser:
         self._lt = None
         self.sym_dct = bidict()
         self.iter = self.expr_subs()
-        self.mathfield_initialized = False
-        self.mathfield_identifier = None
+        self._widget = None
 
-    def _initialize_mathfield_jupyter(self, globals=globals()):
-        _html = """
-            <script type="module">
-                if (window.mathlive == undefined){
-                    import('https://unpkg.com/mathlive?module').then((mathlive) => {
-                        // Create Keyboard
-                        mathlive.makeSharedVirtualKeyboard({
-                          virtualKeyboardLayout: 'dvorak',
-                        });
-                        window.mathlive = mathlive;
-                        IPython.notebook.kernel.execute("matlive_loaded=True");
-                    });
-
-                    var link = document.createElement('link');
-                    link.type = 'text/css';
-                    link.rel = 'stylesheet';
-                    link.href = 'https://unpkg.com/mathlive/dist/mathlive-static.css';
-                    document.head.appendChild(link);
-
-                    var style = document.createElement('style')
-                    style.innerHTML = " \
-                        .formula{ \
-                            font-size: 1.728em \
-                         } \
-                    "
-                    document.head.appendChild(style);
-                }
-            </script>
-        """
-        display(HTML(_html))
-        if self.mathfield_identifier is None:
-            while self.mathfield_identifier is None or self.mathfield_identifier in globals:
-                self.mathfield_identifier = "cb_" + ''.join(random.sample(string.ascii_lowercase, 8))
-        globals[self.mathfield_identifier] = lambda x, _self=self: _self.fromLatex(x)
-        self.mathfield_initialized = True
+    def _handle_latex_update(self, latex_value):
+        """Common handler for LaTeX updates"""
+        if latex_value:
+            try:
+                self.fromLatex(latex_value)
+            except Exception as e:
+                print(f"Error parsing LaTeX: {e}")
 
     def expr_subs(self, start="a", stop="z", step=1, ntimes=True):
         """Yield a range of lowercase letters."""
@@ -74,14 +119,10 @@ class FormulaParser:
     def setExpr(self, expr):
         self.expr = expr
         self._lt = self.toLatex()
-        if self.mathfield_initialized:
-            _html = "document.getElementById('formula_{0}')\
-                        .setValue(ev.target.value,{{suppressChangeNotifications: true}});".format(self.mathfield_identifier)
-            display(HTML(_html))
 
     def cleanLatex(self, latx):
-        latx = latx.replace("\exponentialE", "e")
-        latx = latx.replace("\differentialD", "\d")
+        latx = latx.replace(r'\exponentialE', 'e')
+        latx = latx.replace(r'\differentialD', r'd')
         return latx
 
     def fromLatex(self, latx):
@@ -91,7 +132,68 @@ class FormulaParser:
         return self
 
     def toLatex(self):
-        return sympy.latex(self.expr, symbol_names=self.symbol_names)
+        """Convert expression to LaTeX with proper encapsulation for MathLive"""
+        latex = sympy.latex(self.expr, symbol_names=self.symbol_names)
+        return self._encapsulate_for_mathlive(latex)
+
+    def _encapsulate_for_mathlive(self, latex):
+        """
+        Encapsulate subscripts and superscripts with braces for MathLive compatibility.
+
+        MathLive requires subscripts and superscripts to be encapsulated in braces
+        when they contain more than one character to avoid parsing errors.
+
+        Examples:
+            x_nm -> x_{nm}
+            x^2y -> x^{2}y  (if not already braced)
+            x_{already} -> x_{already}  (unchanged)
+        """
+        import re
+
+        # Pattern to find subscripts/superscripts that aren't already properly braced
+        # Matches: _x or ^x where x is a single char not followed by {
+        # or _xyz or ^xyz where xyz is multiple chars not wrapped in {}
+
+        def encapsulate_script(match):
+            """Encapsulate the subscript or superscript"""
+            operator = match.group(1)  # _ or ^
+            content = match.group(2)   # The content after _ or ^
+
+            # If already braced, return as-is
+            if content.startswith('{'):
+                return match.group(0)
+
+            # If it's a single character or digit, check if followed by another char
+            # If single char/digit followed by space or operator, leave as-is
+            if len(content) == 1:
+                return match.group(0)
+
+            # Multiple characters without braces - encapsulate
+            return f"{operator}{{{content}}}"
+
+        # Pattern explanation:
+        # ([_^])           - Capture _ or ^
+        # (?!{)            - Not followed by {
+        # ([a-zA-Z0-9]+)   - Capture one or more alphanumeric chars
+        # (?![}])          - Not followed by }
+        latex = re.sub(r'([_^])(?!\{)([a-zA-Z0-9]+)(?![}])', encapsulate_script, latex)
+
+        # Also handle case where there's a single char followed by more content
+        # e.g., x_a_b should become x_{a}_{b}, but this is handled by above
+
+        # Handle edge case: _{} or ^{} followed by non-braced content
+        # e.g., x_{n}m should be x_{nm}
+        def merge_adjacent_scripts(match):
+            """Merge adjacent subscripts or superscripts"""
+            operator = match.group(1)
+            braced = match.group(2)
+            following = match.group(3)
+            return f"{operator}{{{braced[1:-1]}{following}}}"
+
+        # Pattern: _{ content }following_chars
+        latex = re.sub(r'([_^])(\{[^}]+\})([a-zA-Z0-9]+)', merge_adjacent_scripts, latex)
+
+        return latex
 
     def toSage(self):
         expr = self.expr
@@ -114,36 +216,73 @@ class FormulaParser:
         self.setExpr(expr)
         return self
 
-    def editor(self, globals=globals()):
-        self._initialize_mathfield_jupyter(globals=globals)
-        _html = """
+    def editor(self):
+        """Create an interactive math editor"""
+        initial_latex = self.toLatex() if self.expr is not None else ''
+
+        # Use anywidget (best compatibility: VS Code, JupyterLab, Classic Notebook)
+        if ANYWIDGET_AVAILABLE:
+            widget = MathFieldWidget(initial_latex=initial_latex)
+            widget.observe(lambda c: self._handle_latex_update(c['new']), names='value')
+            self._widget = widget
+            return widget
+
+        # Fallback to HTML with comm
+        identifier = "cb_" + ''.join(random.sample(string.ascii_lowercase, 8))
+        comm_target = f"mathfield_{identifier}"
+
+        # Register comm handler
+        try:
+            def comm_handler(comm, msg):
+                @comm.on_msg
+                def _recv(msg):
+                    self._handle_latex_update(msg['content']['data'].get('latex', ''))
+            get_ipython().kernel.comm_manager.register_target(comm_target, comm_handler)
+        except Exception:
+            # Fallback: register in IPython user namespace
+            try:
+                get_ipython().user_ns[identifier] = lambda x, _self=self: _self._handle_latex_update(x)
+            except:
+                pass  # If all else fails, editor will be view-only
+
+        # Concise HTML with MathLive (latest version)
+        html = f"""
+        <link rel="stylesheet" href="https://unpkg.com/mathlive/dist/mathlive-static.css">
+        <style>.formula {{ font-size: 1.728em; }}</style>
         <label>Math-Editor</label>
-        <math-field use-shared-virtual-keyboard id="formula_{0}" class="formula">
-            {1}
-        </math-field>
+        <math-field id="mf_{identifier}" class="formula" use-shared-virtual-keyboard>{initial_latex}</math-field>
         <script type="module">
-            function _render_matlive(){{
-                if(window.mathlive){{
-                    console.log("Matlive observer {0} started!")
-                    mathlive.renderMathInDocument()
-                    var mf = document.getElementById('formula_{0}');
-                    mf.addEventListener('input',(ev) => {{
-                        IPython.notebook.kernel.execute("{0}(r'"+mf.value+"')");
-                    }});     
-                    mf.setOptions({{
-                        virtualKeyboardMode: "manual",
-                        virtualKeyboards: "",
-                        smartFence: false,
-                        removeExtraneousParentheses: true
-                    }});
-                }}else{{
-                    setTimeout(function(){{_render_matlive()}},100);
-                }}
+        (async () => {{
+            if (!window.mathlive) {{
+                const ml = await import('https://unpkg.com/mathlive/dist/mathlive.mjs');
+                ml.makeSharedVirtualKeyboard({{ virtualKeyboardLayout: 'dvorak' }});
+                window.mathlive = ml;
             }}
-            _render_matlive();
-         </script>
-        """.format(self.mathfield_identifier, self.toLatex())
-        display(HTML(_html))
+            const mf = document.getElementById('mf_{identifier}');
+
+            // Set properties directly (modern MathLive API)
+            mf.virtualKeyboardMode = "manual";
+            mf.virtualKeyboards = "";
+            mf.smartFence = false;
+            mf.removeExtraneousParentheses = true;
+
+            const k = (typeof IPython !== 'undefined' && IPython?.notebook?.kernel) || (typeof Jupyter !== 'undefined' && Jupyter?.notebook?.kernel);
+            if (k?.comm_manager) {{
+                const c = k.comm_manager.new_comm('{comm_target}');
+                mf.addEventListener('input', () => c.send({{ latex: mf.value }}));
+            }} else if (k) {{
+                mf.addEventListener('input', () => k.execute(`{identifier}(r'${{mf.value}}')`));
+            }}
+        }})();
+        </script>
+        """
+
+        if IPYWIDGETS_AVAILABLE:
+            widget = HTMLWidget(value=html)
+            self._widget = widget
+            return widget
+        else:
+            display(HTML(html))
 
     def subs(self, dct: dict):
         for n, v in dct.items():
@@ -166,6 +305,6 @@ class FormulaParser:
 
     def _repr_latex_(self):
         try:
-            return '$ {\large ' + self.toLatex() + '}$'
+            return r'$ {\large ' + self.toLatex() + r'}$'
         except AttributeError:
-            return None    # if None is returned, plain text is used
+            return None

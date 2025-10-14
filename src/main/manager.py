@@ -1,9 +1,8 @@
 import json
 from dotmap import DotMap
 from easyMathSolver.jupyter.formulas import FormulaParser
-from sympy.parsing.latex._build_latex_antlr import build_parser
 
-build_parser()
+# Custom LaTeX parser is automatically loaded via easyMathSolver.__init__
 
 
 class FormulaManager(DotMap):
