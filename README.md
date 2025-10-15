@@ -1,24 +1,90 @@
 # easyMathSolver
 
-Mathematical expression parsing and solving with custom LaTeX grammar and interactive Jupyter widgets.
+## Mission
+
+Making formulas editable in Python and easy to display, while integrating a full calculation framework (SymPy) with support to transform them to executables.
+
+**This eases the work with difficult formulas.**
+
+Mathematical expressions are often complex and hard to manage in code. easyMathSolver bridges the gap between interactive formula editing, symbolic computation, and executable code - all while maintaining full compatibility with SymPy's powerful mathematical engine.
 
 ## Features
 
-✅ **Automatic Building** - Parser builds automatically on first import
-✅ **Cross-Platform Widgets** - Works in VS Code, JupyterLab, and Classic Notebook
-✅ **MathLive Integration** - Interactive math editor with proper LaTeX encapsulation
-✅ **Package-Name Agnostic** - Rename the package and everything still works
-✅ **SymPy Integration** - Seamlessly patches SymPy's `parse_latex()`
+- **Editing**: Interactive formula editor with live preview using MathLive
+- **View**: Beautiful LaTeX rendering in Jupyter notebooks and export to various formats
+- **Execution**: Direct evaluation with variable substitution and numerical computation
+- **Insert**: Embed formulas or factors into existing expressions seamlessly
+- **Full SymPy Support**: Complete integration with SymPy's symbolic mathematics capabilities
+- **Multi-Formula Storage**: Manage collections of related formulas with the FormulaManager
+- **Import/Export**: Save and load formulas as JSON for persistence and sharing
+- **Live Synchronization**: Edits in the formula editor are directly reflected in the backend
 
-## Quick Start
+## Architecture
 
-### Installation
+### Frontend: MathLive Editor
 
-```bash
-pip install -r requirements.txt
+The system provides two integration methods for interactive formula editing in Jupyter notebooks:
+
+1. **Jupyter Widget (Recommended)**: Modern widget implementation using `anywidget` for cross-platform compatibility
+   - Works in VS Code, JupyterLab, Classic Notebook, and Google Colab
+   - Real-time bidirectional synchronization between editor and Python backend
+
+2. **HTML Insert (Legacy)**: Direct HTML insertion for older environments
+   - Fallback option for environments without widget support
+
+Both methods use **MathLive**, a powerful JavaScript library that provides:
+- Interactive mathematical keyboard
+- LaTeX syntax support with visual editing
+- Proper mathematical notation rendering
+
+### Transformation Layer: LaTeX ↔ SymPy
+
+The core of easyMathSolver is the transformation layer that maintains cross-compatibility between MathLive (LaTeX) and SymPy (symbolic expressions).
+
+**Key Components:**
+
+1. **Custom LaTeX Parser**: Enhanced ANTLR-based parser (`LaTeX.g4`) that extends SymPy's default LaTeX parsing
+   - Auto-builds on first import
+   - Seamlessly patches `sympy.parsing.latex._antlr`
+   - Handles edge cases and special notations
+
+2. **Adapted Parsing Logic**: Special preprocessing and postprocessing to ensure compatibility
+   - Explicit multiplication handling (spaces → `\cdot`)
+   - Greek letter normalization
+   - Subscript and superscript protection
+   - Exponential parsing bug fixes
+   - Mixed alphanumeric subscript preservation
+
+3. **LaTeX Encapsulation**: Automatic formatting for MathLive compatibility
+   - Proper bracing of subscripts/superscripts
+   - Delimiter handling (`\left`, `\right`)
+   - Symbol name mapping
+
+**Data Flow:**
+```
+User Input (MathLive) → LaTeX String → Parser → SymPy Expression → Computation
+                          ↑                                            ↓
+                          └────────── LaTeX Output ←──────────────────┘
 ```
 
-### Basic Usage
+### Backend: FormulaManager
+
+The **FormulaManager** provides a centralized system for managing multiple formulas:
+
+- **Storage**: Keep related formulas organized in collections
+- **Persistence**: Save/load formula collections as JSON files
+- **Access**: Quick retrieval by name or key
+- **Batch Operations**: Process multiple formulas efficiently
+
+Each formula is represented by a **FormulaParser** instance that handles:
+- LaTeX to SymPy conversion
+- Variable substitution
+- Expression evaluation
+- LaTeX rendering with proper formatting
+
+## Examples
+
+### Example 1: Interactive Formula Editing
 
 ```python
 from easyMathSolver.main.manager import FormulaManager
@@ -26,202 +92,144 @@ from easyMathSolver.main.manager import FormulaManager
 # Create formula storage
 math_storage = FormulaManager()
 
-# Parse LaTeX (uses custom grammar automatically)
-formula = math_storage.get("my_formula")
-formula.fromLatex(r"E = m c^2")
+# Add a formula and edit interactively
+energy = math_storage.add("energy")
+energy.fromLatex(r"E = m c^2")
 
-# Display as LaTeX
-print(formula.toLatex())  # Output: E = m c^{2}
+# Display interactive editor in Jupyter
+widget = energy.editor()
+widget  # User can now edit the formula visually
 
-# Get SymPy expression
-expr = formula.toSympy()
-print(expr)  # Output: Eq(E, c**2*m)
+# Changes are immediately reflected
+print(energy.toSympy())  # Shows updated expression
 ```
 
-### Interactive Editor (Jupyter)
-
-```python
-# Create interactive MathLive editor
-widget = formula.editor()
-widget  # Display in Jupyter
-
-# Changes in the editor automatically update formula.expr
-```
-
-## Architecture
-
-### Custom LaTeX Parser
-
-The package uses a custom `LaTeX.g4` ANTLR grammar file instead of SymPy's default parser:
-
-```
-latex_parser/
-├── LaTeX.g4              # Your custom ANTLR grammar
-├── __init__.py           # Auto-builder and SymPy patcher
-├── _antlr/               # Generated parser (auto-created)
-└── _build_custom_latex_parser.py
-```
-
-**How it works:**
-1. On import, checks if parser is built
-2. If not, auto-installs `antlr4-tools` and builds from `LaTeX.g4`
-3. Patches `sympy.parsing.latex._antlr` to use custom parser
-4. All `parse_latex()` calls now use your grammar
-
-See [CUSTOM_PARSER_SETUP.md](CUSTOM_PARSER_SETUP.md) for details.
-
-### MathLive Integration
-
-Interactive math editor with automatic LaTeX encapsulation:
-
-```python
-formula.fromLatex(r"w_{nm}(E, E_0)")
-latex = formula.toLatex()
-# Output: w_{nm}{\left(E,E_{0} \right)}
-# All subscripts/superscripts properly braced for MathLive
-```
-
-See [jupyter/README_MATHLIVE.md](jupyter/README_MATHLIVE.md) for details.
-
-## Components
-
-### FormulaManager
-
-Storage and management of multiple formulas:
-
-```python
-math_storage = FormulaManager()
-
-# Add formulas
-math_storage.add("energy").fromLatex(r"E = m c^2")
-math_storage.add("pythagorean").fromLatex(r"a^2 + b^2 = c^2")
-
-# Access formulas
-energy = math_storage.get("energy")
-
-# Save/load
-math_storage.save("formulas.json")
-math_storage.load("formulas.json")
-```
-
-### FormulaParser
-
-Individual formula parsing and conversion:
+### Example 2: Variable Substitution and Execution
 
 ```python
 from easyMathSolver.jupyter.formulas import FormulaParser
 
-parser = FormulaParser()
-
-# LaTeX ↔ SymPy
-parser.fromLatex(r"\frac{a}{b}")
-expr = parser.toSympy()
-latex = parser.toLatex()
-
-# Substitution
-parser.subs({'a': 2, 'b': 3})
-
-# Interactive editor
-widget = parser.editor()
-```
-
-## Widget Support
-
-### anywidget (Recommended)
-
-Works in **all** Jupyter environments:
-
-```python
-# Install
-pip install anywidget traitlets
-
-# Use
-widget = formula.editor()
-# Works in: VS Code, JupyterLab, Classic Notebook, Colab
-```
-
-### ipywidgets (Fallback)
-
-Standard Jupyter widgets:
-
-```python
-# Install
-pip install ipywidgets
-
-# Automatically used if anywidget not available
-```
-
-## Customization
-
-### Modify LaTeX Grammar
-
-1. Edit `latex_parser/LaTeX.g4`
-2. Delete `latex_parser/_antlr/`
-3. Restart Python - parser auto-rebuilds
-
-### Add Custom Symbol Names
-
-```python
-class MyFormulaParser(FormulaParser):
-    symbol_names = {'rho': r'\rho', 'alpha': r'\alpha'}
-```
-
-## Examples
-
-### Example 1: Energy Formula
-
-```python
+# Parse kinetic energy formula
 formula = FormulaParser()
-formula.fromLatex(r"E = \frac{1}{2} m v^2")
+formula.fromLatex(r"KE = \frac{1}{2} m v^2")
 
 # Substitute values
 formula.subs({'m': 2, 'v': 10})
 result = formula.toSympy()
-print(result)  # Eq(E, 100)
+print(result)  # Eq(KE, 100)
+
+# Solve for a variable
+print(formula.toSympy().rhs)  # 100
 ```
 
-### Example 2: Interactive Equation Editor
+### Example 3: Inserting Formulas into Other Formulas
 
 ```python
-math_storage = FormulaManager()
-eqn = math_storage.get("wave_equation")
+# Create related formulas
+storage = FormulaManager()
 
-# Show editor
-widget = eqn.editor()
-widget  # User can edit the equation interactively
+storage.add("kinetic").fromLatex(r"KE = \frac{1}{2} m v^2")
+storage.add("potential").fromLatex(r"PE = m g h")
 
-# Access updated expression
-print(eqn.toSympy())
+# Get SymPy expressions
+ke = storage.get("kinetic").toSympy().rhs
+pe = storage.get("potential").toSympy().rhs
+
+# Combine into total energy formula
+total = FormulaParser()
+total.expr = ke + pe
+print(total.toLatex())  # Shows combined formula
 ```
 
-### Example 3: Batch Processing
+### Example 4: Multi-Formula Storage and Persistence
 
 ```python
+# Create a collection of physics formulas
 formulas = {
-    "kinetic": r"KE = \frac{1}{2} m v^2",
-    "potential": r"PE = m g h",
-    "total": r"E = KE + PE"
+    "newton_second": r"F = m a",
+    "work": r"W = F d",
+    "power": r"P = \frac{W}{t}",
+    "momentum": r"p = m v",
+    "impulse": r"J = F \Delta t"
 }
 
 storage = FormulaManager()
 for name, latex in formulas.items():
     storage.add(name).fromLatex(latex)
 
-storage.save("physics.json")
+# Save to file
+storage.save("physics_formulas.json")
+
+# Load later
+new_storage = FormulaManager()
+new_storage.load("physics_formulas.json")
+
+# Access formulas
+force = new_storage.get("newton_second")
+print(force.toLatex())
 ```
 
-## Documentation
+### Example 5: Complex Formula with Space-Based Multiplication
 
-- [INSTALLATION.md](INSTALLATION.md) - Installation guide
-- [CUSTOM_PARSER_SETUP.md](CUSTOM_PARSER_SETUP.md) - Custom parser setup
-- [jupyter/README_MATHLIVE.md](jupyter/README_MATHLIVE.md) - MathLive integration
-- [latex_parser/README.md](latex_parser/README.md) - Parser internals
+```python
+# Handle formulas with implicit multiplication (spaces)
+formula = FormulaParser()
 
-## Requirements
+# Input with spaces between components
+formula.fromLatex(r"w_{nm}(E, E_0) = N \cdot (1 - e^{-\gamma \frac{E}{E_0}}) \cdot e^{-\frac{E}{\beta E_0}}")
 
-See `requirements.txt`, `requirements-minimal.txt`, and `requirements-dev.txt`.
+# System automatically makes multiplications explicit
+print(formula.toLatex())  # Properly formatted with \cdot
 
-**Core:**
+# Access as SymPy expression for computation
+expr = formula.toSympy()
+```
+
+### Example 6: Greek Letters and Special Notation
+
+```python
+# Greek letters and complex subscripts
+formula = FormulaParser()
+formula.fromLatex(r"\Delta_r + \Beta_r = \alpha_{n12m} \cdot \gamma")
+
+# Properly handles Greek letters and mixed alphanumeric subscripts
+print(formula.toLatex())  # Correctly formatted
+print(formula.toSympy())  # Symbolic expression
+```
+
+### Example 7: Batch Processing and Analysis
+
+```python
+# Process multiple formulas
+storage = FormulaManager()
+
+# Define electromagnetic formulas
+em_formulas = {
+    "coulomb": r"F = k \frac{q_1 q_2}{r^2}",
+    "electric_field": r"E = \frac{F}{q}",
+    "gauss": r"\Phi_E = \frac{Q}{\epsilon_0}",
+    "capacitance": r"C = \frac{Q}{V}"
+}
+
+for name, latex in em_formulas.items():
+    storage.add(name).fromLatex(latex)
+
+# Export all formulas
+storage.save("electromagnetic_formulas.json")
+
+# Batch substitution
+storage.get("coulomb").subs({'k': 8.99e9, 'q_1': 1e-6, 'q_2': 2e-6, 'r': 0.1})
+result = storage.get("coulomb").toSympy()
+print(f"Force: {result.rhs} N")
+```
+
+## Installation
+
+```bash
+pip install -r requirements.txt
+```
+
+**Core Requirements:**
 - sympy >= 1.12
 - bidict >= 0.22.0
 - dotmap >= 1.3.30
@@ -275,6 +283,16 @@ SOFTWARE.
 **Contributions by:** David Ziegler ([techblogio.com](https://techblogio.com))
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+### Areas for Contribution
+
+- Additional LaTeX notation support
+- Performance optimizations
+- Extended SymPy integration features
+- Documentation improvements
+- Bug fixes and edge case handling
+- Additional export formats
+- Enhanced widget features
 
 ## Version
 

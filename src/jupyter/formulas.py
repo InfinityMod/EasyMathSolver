@@ -197,7 +197,6 @@ if ANYWIDGET_AVAILABLE:
         def __init__(self, initial_latex='', **kwargs):
             super().__init__(**kwargs)
             self.value = initial_latex
-            display(initial_latex)
 
 
 # ============================================================================
@@ -205,7 +204,25 @@ if ANYWIDGET_AVAILABLE:
 # ============================================================================
 
 class FormulaParser:
-    symbol_names = {'rho': r'\rho'}
+    # Map symbol names to their LaTeX representations
+    # This includes Greek letters to ensure proper rendering
+    symbol_names = {
+        'rho': r'\rho',
+        # Lowercase Greek letters
+        'alpha': r'\alpha', 'beta': r'\beta', 'gamma': r'\gamma', 'delta': r'\delta',
+        'epsilon': r'\epsilon', 'zeta': r'\zeta', 'eta': r'\eta', 'theta': r'\theta',
+        'iota': r'\iota', 'kappa': r'\kappa', 'lambda': r'\lambda', 'mu': r'\mu',
+        'nu': r'\nu', 'xi': r'\xi', 'omicron': r'\omicron', 'pi': r'\pi',
+        'rho': r'\rho', 'sigma': r'\sigma', 'tau': r'\tau', 'upsilon': r'\upsilon',
+        'phi': r'\phi', 'chi': r'\chi', 'psi': r'\psi', 'omega': r'\omega',
+        # Uppercase Greek letters
+        'Alpha': r'\Alpha', 'Beta': r'\Beta', 'Gamma': r'\Gamma', 'Delta': r'\Delta',
+        'Epsilon': r'\Epsilon', 'Zeta': r'\Zeta', 'Eta': r'\Eta', 'Theta': r'\Theta',
+        'Iota': r'\Iota', 'Kappa': r'\Kappa', 'Lambda': r'\Lambda', 'Mu': r'\Mu',
+        'Nu': r'\Nu', 'Xi': r'\Xi', 'Omicron': r'\Omicron', 'Pi': r'\Pi',
+        'Rho': r'\Rho', 'Sigma': r'\Sigma', 'Tau': r'\Tau', 'Upsilon': r'\Upsilon',
+        'Phi': r'\Phi', 'Chi': r'\Chi', 'Psi': r'\Psi', 'Omega': r'\Omega',
+    }
 
     def __init__(self):
         self.expr = None
@@ -240,9 +257,109 @@ class FormulaParser:
         self.expr = expr
         self._lt = self.toLatex()
 
+    def _fix_exponential_parsing_bug(self, latx):
+        r"""
+        Fix SymPy LaTeX parser bug where e^{-\frac{...}{...}} after \cdot is
+        incorrectly parsed as division instead of multiplication.
+
+        Converts patterns like:
+        - e^{-\frac{A}{B}} → \exp(-\frac{A}{B})
+        - e^{-(...)} → \exp(-(...))
+
+        This ensures proper parsing when exponentials appear after \cdot.
+        """
+        import re
+
+        # Pattern 1: e^{- followed by \frac{...}{...} and closing brace
+        # This is the most problematic pattern
+        def replace_efrac(match):
+            content = match.group(1)
+            return f'\\exp(-{content})'
+
+        # Match: e^{-\frac{...}{...}}
+        # We need to match balanced braces
+        latx = re.sub(
+            r'e\^\{-\\frac\{([^}]+)\}\{([^}]+)\}\}',
+            lambda m: f'\\exp(-\\frac{{{m.group(1)}}}{{{m.group(2)}}})',
+            latx
+        )
+
+        # Pattern 2: e^{-(...)} where parentheses contain the expression
+        latx = re.sub(
+            r'e\^\{-\(([^)]+)\)\}',
+            lambda m: f'\\exp(-({m.group(1)}))',
+            latx
+        )
+
+        return latx
+
+    def _protect_mixed_subscripts(self, latx):
+        r"""
+        Protect multi-character subscripts from being parsed as multiplication.
+
+        The SymPy parser treats subscripts like _{rear} as r*e*a*r and _{n12m} as n*12*m.
+        We wrap them in \mathit{} to preserve them as a single unit.
+
+        Converts:
+            _{rear} → _{\mathit{rear}}
+            _{n12m} → _{\mathit{n12m}}
+
+        Single-character subscripts are left as-is: _{r} → _{r}
+        """
+        import re
+
+        def protect_subscript(match):
+            r"""Wrap multi-character subscripts in \mathit{}"""
+            content = match.group(1)
+
+            # Check if content has multiple alphanumeric characters
+            # (excluding LaTeX commands which start with \)
+            if not content.startswith('\\'):
+                # Count alphanumeric characters
+                alphanum_chars = re.findall(r'[a-zA-Z0-9]', content)
+
+                # If more than one alphanumeric character, protect it
+                if len(alphanum_chars) > 1:
+                    return '_\\mathit{' + content + '}'
+
+            # Keep as-is for single characters or LaTeX commands
+            return match.group(0)
+
+        # Match subscripts: _{...}
+        # But exclude those already wrapped in \text, \mathit, etc.
+        latx = re.sub(r'_\{(?!\\text|\\mathit|\\mathrm)([^}]+)\}', protect_subscript, latx)
+
+        return latx
+
+    def _fix_comma_in_subscripts(self, latx):
+        r"""
+        Fix SymPy LaTeX parser bug where commas in subscripts cause parsing errors.
+
+        The parser treats commas as function argument separators, which breaks
+        subscripts like r_{sum,j}.
+
+        Converts: r_{sum,j} → r_{sumj} (removes comma)
+        Note: This is a workaround - the comma cannot be preserved due to parser limitations.
+        """
+        import re
+
+        def replace_comma_in_subscript(match):
+            """Remove comma from subscript"""
+            content = match.group(1)
+            # Simply remove the comma and any spaces around it
+            return '_{' + content.replace(',', '').replace(' ', '') + '}'
+
+        # Match subscripts with commas: _{...,...}
+        latx = re.sub(r'_\{([^}]*,[^}]*)\}', replace_comma_in_subscript, latx)
+
+        return latx
+
     def cleanLatex(self, latx):
         latx = latx.replace(r'\exponentialE', 'e')
         latx = latx.replace(r'\differentialD', r'd')
+        latx = self._protect_mixed_subscripts(latx)
+        latx = self._fix_comma_in_subscripts(latx)
+        latx = self._fix_exponential_parsing_bug(latx)
         return latx
 
     def fromLatex(self, latx):
@@ -254,7 +371,39 @@ class FormulaParser:
     def toLatex(self):
         """Convert expression to LaTeX with proper encapsulation for MathLive"""
         latex = sympy.latex(self.expr, symbol_names=self.symbol_names)
+        latex = self._fix_greek_letters(latex)
+        latex = self._make_multiplication_explicit(latex)
         return self._encapsulate_for_mathlive(latex)
+
+    def _fix_greek_letters(self, latex):
+        """
+        Fix Greek letter symbols that appear without backslash.
+
+        When SymPy parses symbols like Beta_{r}, it creates a symbol with name "Beta_{r}"
+        and latex() outputs "Beta_{r}" instead of "\\Beta_{r}".
+
+        This method adds the backslash to Greek letter names.
+        """
+        import re
+
+        # List of Greek letter names (both cases)
+        greek_letters = [
+            'alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta',
+            'iota', 'kappa', 'lambda', 'mu', 'nu', 'xi', 'omicron', 'pi',
+            'rho', 'sigma', 'tau', 'upsilon', 'phi', 'chi', 'psi', 'omega',
+            'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Zeta', 'Eta', 'Theta',
+            'Iota', 'Kappa', 'Lambda', 'Mu', 'Nu', 'Xi', 'Omicron', 'Pi',
+            'Rho', 'Sigma', 'Tau', 'Upsilon', 'Phi', 'Chi', 'Psi', 'Omega',
+        ]
+
+        for greek in greek_letters:
+            # Match Greek letter name that's NOT preceded by backslash
+            # Must be at word start (space, start of string, or after operator)
+            pattern = r'(?<!\\)(?<![a-zA-Z])' + greek + r'(?![a-zA-Z])'
+            replacement = r'\\' + greek
+            latex = re.sub(pattern, replacement, latex)
+
+        return latex
 
     def _encapsulate_for_mathlive(self, latex):
         """
@@ -298,6 +447,89 @@ class FormulaParser:
             return f"{operator}{{{braced[1:-1]}{following}}}"
 
         latex = re.sub(r'([_^])(\{[^}]+\})([a-zA-Z0-9]+)', merge_adjacent_scripts, latex)
+
+        return latex
+
+    def _make_multiplication_explicit(self, latex):
+        r"""
+        Convert implicit multiplications (spaces between components) to explicit \cdot in LaTeX.
+
+        Important: Only spaces between distinct components are treated as multiplication.
+        Multi-letter variables without spaces (like 'abc') remain as single components.
+
+        Patterns fixed:
+        1. number + space + variable (e.g., "0.5 x" -> "0.5 \cdot x")
+        2. closing brace + space + variable (e.g., "e^{x} y" -> "e^{x} \cdot y")
+        3. closing brace + space + LaTeX command (e.g., "E_{0} \beta" -> "E_{0} \cdot \beta")
+        4. LaTeX command + space + variable (e.g., "\beta E_0" -> "\beta \cdot E_0")
+        5. \right) + space + \left( (e.g., "\right) \left(" -> "\right) \cdot \left(")
+        6. single letter + space + single letter (e.g., "E E_0" -> "E \cdot E_0")
+           BUT NOT consecutive letters without space (e.g., "abc" stays as "abc")
+
+        Examples of what is preserved:
+        - "abc" stays as "abc" (no spaces = single component)
+        - "gamma" stays as "gamma" (part of \gamma command)
+        - "mathit{nm}" stays intact (inside braces)
+        """
+        import re
+
+        # Use a placeholder to avoid double-matching
+        PLACEHOLDER = '<<<CDOT>>>'
+
+        # Pattern 1: number (possibly decimal) + space + any letter or backslash (LaTeX command start)
+        # Matches: "0.5 x", "123 y", "3.14159 r", "2 \beta"
+        latex = re.sub(
+            r'(\d+\.?\d*)\s+([a-zA-Z\\])',
+            lambda m: f'{m.group(1)}{PLACEHOLDER}{m.group(2)}',
+            latex
+        )
+
+        # Pattern 2: closing brace } + space + single letter (not followed by more letters)
+        # Matches: "e^{x} y", "_{0}} E"
+        # Does NOT match: "} abc" where abc is a multi-letter variable
+        latex = re.sub(
+            r'(\})\s+([a-zA-Z])(?![a-zA-Z])',
+            lambda m: f'{m.group(1)}{PLACEHOLDER}{m.group(2)}',
+            latex
+        )
+
+        # Pattern 3: closing brace } + space + LaTeX command (starts with \)
+        # Matches: "E_{0} \beta", "x^{2} \alpha"
+        # EXCLUDES: \left and \right (these are delimiters, not operators)
+        latex = re.sub(
+            r'(\})\s+(\\(?!left|right)[a-zA-Z]+)',
+            lambda m: f'{m.group(1)}{PLACEHOLDER}{m.group(2)}',
+            latex
+        )
+
+        # Pattern 4: LaTeX command + space + variable or number
+        # Matches: "\beta E_0", "\alpha x", "\gamma 5"
+        latex = re.sub(
+            r'(\\[a-zA-Z]+)\s+([a-zA-Z0-9])',
+            lambda m: f'{m.group(1)}{PLACEHOLDER}{m.group(2)}',
+            latex
+        )
+
+        # Pattern 5: \right) + space + \left(
+        # Matches: "\right) \left(" for adjacent parentheses
+        latex = re.sub(
+            r'(\\right\))\s+(\\left\()',
+            lambda m: f'{m.group(1)}{PLACEHOLDER}{m.group(2)}',
+            latex
+        )
+
+        # Pattern 6: single letter + space + single letter
+        # Matches: "E E_0", "x y" (but NOT "abc" without space)
+        # Must not be preceded by backslash (part of LaTeX command)
+        # Must not be followed by more letters (multi-letter variable)
+        latex = re.sub(
+            r'(?<!\\)([a-zA-Z])(?![a-zA-Z_^])\s+([a-zA-Z])(?![a-zA-Z])',
+            lambda m: f'{m.group(1)}{PLACEHOLDER}{m.group(2)}',
+            latex
+        )
+
+        # Replace placeholder with actual \cdot
+        latex = latex.replace(PLACEHOLDER, ' \\cdot ')
 
         return latex
 
