@@ -19,6 +19,9 @@ Mathematical expressions are often complex and hard to manage in code. easyMathS
 - **Import/Export**: Save and load formulas as JSON for persistence and sharing
 - **Live Synchronization**: Edits in the formula editor are directly reflected in the backend
 
+## Example
+https://github.com/user-attachments/assets/d6ade1ea-fc2b-4b4f-9b81-241828d19cff
+
 ## Architecture
 
 ### Frontend: MathLive Editor
