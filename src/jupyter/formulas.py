@@ -36,6 +36,7 @@ MATHLIVE_CSS = """
         position: relative;
         width: 100%;
         margin-bottom: 1em;
+        transition: min-height 0.3s ease;
     }
     .mathfield-container.keyboard-visible {
         min-height: 400px;
@@ -50,17 +51,32 @@ MATHLIVE_CSS = """
         min-height: 2em;
         width: 100%;
     }
-    /* Position keyboard INSIDE container, not at page bottom */
+    /* Position keyboard INSIDE container, directly under equation field */
     .mathfield-container .ML__keyboard,
-    .mathfield-container math-virtual-keyboard {
-        position: absolute !important;
-        top: 100% !important;
+    .mathfield-container > math-virtual-keyboard {
+        position: relative !important;
         left: 0 !important;
         right: 0 !important;
         bottom: auto !important;
+        width: 100% !important;
         z-index: 1000 !important;
         margin-top: 0.5em !important;
+        transform: none !important;
+        transition: opacity 0.3s ease;
     }
+    .mathfield-container > math-virtual-keyboard {
+        display: block;
+        min-width: 320px;
+        height: 280px;
+    }
+
+    /* Hide keyboard when not visible */
+    .mathfield-container:not(.keyboard-visible) > math-virtual-keyboard {
+        display: none;
+        height: 0;
+        overflow: hidden;
+    }
+
     /* Force parent containers to expand and be visible */
     .jp-OutputArea-output,
     .jp-RenderedHTMLCommon,
@@ -79,6 +95,32 @@ MATHLIVE_CSS = """
 
 # Shared JavaScript for keyboard management logic
 KEYBOARD_LOGIC_JS = """
+
+    // Run after DOM is ready
+    // 1) Create the container element dynamically
+    const vk = document.createElement('math-virtual-keyboard');
+    vk.id = 'vk';
+
+    // 2) Insert it into the mathfield container (not body!)
+    container.appendChild(vk);
+
+    // 3) Tell MathLive to render the keyboard inside this container
+    // Make sure MathLive has loaded and exposed `mathVirtualKeyboard`
+    const init = () => {
+        if (!window.mathVirtualKeyboard) return false;
+        mathVirtualKeyboard.container = vk;           // key step
+        mathVirtualKeyboard.layouts = ['numeric'];    // optional
+        return true;
+    };
+
+    // If MathLive isn't ready yet, retry a few times
+    if (!init()) {
+        let tries = 0, t = setInterval(() => {
+        if (init() || ++tries > 20) clearInterval(t);
+        }, 50);
+    }
+
+
     // Track keyboard visibility and expand container
     let keyboardVisible = false;
 
@@ -94,35 +136,42 @@ KEYBOARD_LOGIC_JS = """
         keyboardBtn.textContent = '⌨️ Keyboard';
     }
 
-    // Button click to toggle keyboard by focusing/blurring
+    // Button click to toggle keyboard visibility
     keyboardBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
+
         if (keyboardVisible) {
-            mf.blur();
+            // Hide the keyboard using MathLive API
+            if (window.mathVirtualKeyboard) {
+                window.mathVirtualKeyboard.hide();
+            }
             hideKeyboard();
         } else {
+            // Show the keyboard using MathLive API
             mf.focus();
             showKeyboard();
+
+            // Use MathLive API to show keyboard
+            if (window.mathVirtualKeyboard) {
+                window.mathVirtualKeyboard.show();
+            }
         }
     });
 
     mf.addEventListener('focus', () => {
-        // Expand container when field gets focus (keyboard will appear with auto policy)
-        setTimeout(() => {
-            showKeyboard();
-            // Move keyboard into container if it exists
-            const kbd = document.querySelector('math-virtual-keyboard');
-            if (kbd && !container.contains(kbd)) {
-                container.appendChild(kbd);
-            }
-        }, 100);
+        // Don't auto-show keyboard on focus, only via button
+        // Just expand the container to prepare for keyboard
+        // (Keyboard policy is "manual" so it won't auto-show)
     });
 
     mf.addEventListener('blur', () => {
-        // Collapse container when field loses focus
+        // Hide keyboard when field loses focus
         setTimeout(() => {
             if (!mf.hasFocus()) {
+                if (window.mathVirtualKeyboard) {
+                    window.mathVirtualKeyboard.hide();
+                }
                 hideKeyboard();
             }
         }, 200);
@@ -178,7 +227,7 @@ if ANYWIDGET_AVAILABLE:
             // Set MathLive properties
             mf.smartFence = true;
             mf.removeExtraneousParentheses = true;
-            mf.mathVirtualKeyboardPolicy = "auto";  // Auto-show keyboard on focus
+            mf.mathVirtualKeyboardPolicy = "sandboxed";  // Manual control for keyboard toggle button
 
             {KEYBOARD_LOGIC_JS}
 
@@ -264,25 +313,59 @@ class FormulaParser:
 
         Converts patterns like:
         - e^{-\frac{A}{B}} → \exp(-\frac{A}{B})
+        - e^{-\frac{A}{B_{0}}} → \exp(-\frac{A}{B_{0}}) (with nested braces)
         - e^{-(...)} → \exp(-(...))
 
         This ensures proper parsing when exponentials appear after \cdot.
         """
         import re
 
-        # Pattern 1: e^{- followed by \frac{...}{...} and closing brace
-        # This is the most problematic pattern
-        def replace_efrac(match):
-            content = match.group(1)
-            return f'\\exp(-{content})'
+        def match_balanced_braces(text, start_pos):
+            """Extract content within balanced braces starting at start_pos"""
+            if start_pos >= len(text) or text[start_pos] != '{':
+                return None, start_pos
 
-        # Match: e^{-\frac{...}{...}}
-        # We need to match balanced braces
-        latx = re.sub(
-            r'e\^\{-\\frac\{([^}]+)\}\{([^}]+)\}\}',
-            lambda m: f'\\exp(-\\frac{{{m.group(1)}}}{{{m.group(2)}}})',
-            latx
-        )
+            brace_count = 0
+            i = start_pos
+            content_start = start_pos + 1
+
+            while i < len(text):
+                if text[i] == '{':
+                    brace_count += 1
+                elif text[i] == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        return text[content_start:i], i + 1
+                i += 1
+
+            return None, start_pos
+
+        # Fix e^{-\frac{...}{...}} patterns with proper brace balancing
+        result = []
+        i = 0
+
+        while i < len(latx):
+            # Look for e^{-\frac pattern
+            if latx[i:i+9] == 'e^{-\\frac':
+                # Find the opening brace after \frac
+                frac_start = i + 9
+                if frac_start < len(latx) and latx[frac_start] == '{':
+                    # Extract numerator with balanced braces
+                    numerator, next_pos = match_balanced_braces(latx, frac_start)
+                    if numerator is not None and next_pos < len(latx) and latx[next_pos] == '{':
+                        # Extract denominator with balanced braces
+                        denominator, next_pos = match_balanced_braces(latx, next_pos)
+                        if denominator is not None and next_pos < len(latx) and latx[next_pos] == '}':
+                            # Successfully matched the pattern
+                            result.append(f'\\exp(-\\frac{{{numerator}}}{{{denominator}}})')
+                            i = next_pos + 1
+                            continue
+
+            # No match, append character and continue
+            result.append(latx[i])
+            i += 1
+
+        latx = ''.join(result)
 
         # Pattern 2: e^{-(...)} where parentheses contain the expression
         latx = re.sub(
@@ -311,6 +394,10 @@ class FormulaParser:
         def protect_subscript(match):
             r"""Wrap multi-character subscripts in \mathit{}"""
             content = match.group(1)
+
+            # Don't protect subscripts with = (used in sum/prod/int limits like i=1)
+            if '=' in content:
+                return match.group(0)
 
             # Check if content has multiple alphanumeric characters
             # (excluding LaTeX commands which start with \)
@@ -357,8 +444,8 @@ class FormulaParser:
     def cleanLatex(self, latx):
         latx = latx.replace(r'\exponentialE', 'e')
         latx = latx.replace(r'\differentialD', r'd')
+        latx = self._fix_comma_in_subscripts(latx)  # Fix commas BEFORE protecting subscripts
         latx = self._protect_mixed_subscripts(latx)
-        latx = self._fix_comma_in_subscripts(latx)
         latx = self._fix_exponential_parsing_bug(latx)
         return latx
 
@@ -495,9 +582,9 @@ class FormulaParser:
 
         # Pattern 3: closing brace } + space + LaTeX command (starts with \)
         # Matches: "E_{0} \beta", "x^{2} \alpha"
-        # EXCLUDES: \left and \right (these are delimiters, not operators)
+        # EXCLUDES: \left, \right, \frac, \int, \sum (these are operators/delimiters, not multiplicands)
         latex = re.sub(
-            r'(\})\s+(\\(?!left|right)[a-zA-Z]+)',
+            r'(\})\s+(\\(?!left|right|frac|int|sum|prod|lim)[a-zA-Z]+)',
             lambda m: f'{m.group(1)}{PLACEHOLDER}{m.group(2)}',
             latex
         )
@@ -554,6 +641,93 @@ class FormulaParser:
         self.setExpr(expr)
         return self
 
+    def simplify(self, side="rhs", **kwargs):
+        """
+        Simplify the expression or a specific side of an equation using SymPy's simplification.
+
+        This method applies SymPy's simplify() function to simplify expressions algebraically.
+        For equations, you can choose to simplify the left-hand side (lhs), right-hand side (rhs),
+        or both sides independently.
+
+        Parameters
+        ----------
+        side : str, optional (default="rhs")
+            Which side to simplify:
+            - "rhs": Simplify only the right-hand side of an equation (or entire expression if not an equation)
+            - "lhs": Simplify only the left-hand side of an equation
+            - "both": Simplify both sides of an equation independently
+        **kwargs : optional
+            Additional keyword arguments to pass to sympy.simplify():
+            - ratio : float (default=1.7)
+                Controls the maximum ratio of complexity increase during simplification
+            - measure : function
+                Custom function to measure expression complexity
+            - rational : bool (default=None)
+                If True, rewrite as a rational function
+            - inverse : bool (default=False)
+                If True, apply inverse transformations
+
+        Returns
+        -------
+        self : FormulaParser
+            Returns self to allow method chaining
+
+        Examples
+        --------
+        >>> # Simplify right-hand side of equation
+        >>> formula = FormulaParser()
+        >>> formula.fromLatex(r"y = x + x + x")
+        >>> formula.simplify()  # or simplify(side="rhs")
+        >>> formula.toLatex()  # Returns: y = 3*x
+
+        >>> # Simplify left-hand side
+        >>> formula.fromLatex(r"a + a = 2a")
+        >>> formula.simplify(side="lhs")
+        >>> formula.toLatex()  # Returns: 2*a = 2*a
+
+        >>> # Simplify both sides
+        >>> formula.fromLatex(r"x + x = y + y + y")
+        >>> formula.simplify(side="both")
+        >>> formula.toLatex()  # Returns: 2*x = 3*y
+
+        >>> # Simplify non-equation expression
+        >>> formula.fromLatex(r"\frac{x^2 - 1}{x - 1}")
+        >>> formula.simplify()
+        >>> formula.toLatex()  # Returns: x + 1
+
+        >>> # Method chaining
+        >>> formula.fromLatex(r"y = 2x + 3x").simplify().toLatex()
+        """
+        import sympy
+
+        if self.expr is None:
+            return self
+
+        # Check if expression is an equation (has lhs and rhs)
+        if isinstance(self.expr, sympy.Eq):
+            if side == "rhs":
+                # Simplify only right-hand side
+                simplified_rhs = sympy.simplify(self.expr.rhs, **kwargs)
+                self.expr = sympy.Eq(self.expr.lhs, simplified_rhs)
+            elif side == "lhs":
+                # Simplify only left-hand side
+                simplified_lhs = sympy.simplify(self.expr.lhs, **kwargs)
+                self.expr = sympy.Eq(simplified_lhs, self.expr.rhs)
+            elif side == "both":
+                # Simplify both sides independently
+                simplified_lhs = sympy.simplify(self.expr.lhs, **kwargs)
+                simplified_rhs = sympy.simplify(self.expr.rhs, **kwargs)
+                self.expr = sympy.Eq(simplified_lhs, simplified_rhs)
+            else:
+                raise ValueError(f"Invalid side parameter: '{side}'. Must be 'lhs', 'rhs', or 'both'.")
+        else:
+            # Not an equation, just simplify the entire expression
+            self.expr = sympy.simplify(self.expr, **kwargs)
+
+        # Update the internal LaTeX representation
+        self.setExpr(self.expr)
+        return self
+    
     def editor(self):
         """Create an interactive math editor"""
         initial_latex = self.toLatex() if self.expr is not None else ''
@@ -613,7 +787,7 @@ class FormulaParser:
             // Set MathLive properties
             mf.smartFence = true;
             mf.removeExtraneousParentheses = true;
-            mf.mathVirtualKeyboardPolicy = "auto";
+            mf.mathVirtualKeyboardPolicy = "sandboxed";  // Manual control for keyboard toggle button
 
             {KEYBOARD_LOGIC_JS}
 
